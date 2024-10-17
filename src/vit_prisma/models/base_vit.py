@@ -7,13 +7,14 @@ Copyright (c) Sonia Joseph. All rights reserved.
 Inspired by TransformerLens. Some functions have been adapted from the TransformerLens project.
 For more information on TransformerLens, visit: https://github.com/neelnanda-io/TransformerLens
 """
+import os
 
 import logging
 
 import torch
 import torch.nn as nn
 
-from transformers import ViTForImageClassification
+from transformers import ViTForImageClassification, ViTConfig
 
 from vit_prisma.models.layers.patch_embedding import PatchEmbedding, TubeletEmbedding
 from vit_prisma.models.layers.position_embedding import PosEmbedding
@@ -720,6 +721,18 @@ class HookedViT(HookedRootModule):
             block.to(devices.get_device_for_block_index(i, self.cfg))
 
     @classmethod
+    def from_local(cls, model_config: ViTConfig, checkpoint_path: str):
+        model = cls(model_config)
+        print(f"Loading the model locally from: {checkpoint_path}")
+        if os.path.exists(checkpoint_path):
+            checkpoint = torch.load(checkpoint_path, map_location=torch.device(model_config.device))
+            model.load_state_dict(checkpoint["model_state_dict"])
+            return model
+        else:
+            raise Exception("Attempting to load a Prisma ViT but no file was found at "
+                            f"{checkpoint_path}")
+
+    @classmethod
     def from_pretrained(
         cls, 
         model_name: str,
@@ -741,7 +754,6 @@ class HookedViT(HookedRootModule):
         use_attn_result: Optional[bool] = False,
         **from_pretrained_kwargs,
     ) -> "HookedViT":
-        
         assert not (
             from_pretrained_kwargs.get("load_in_8bit", False)
             or from_pretrained_kwargs.get("load_in_4bit", False)
@@ -750,6 +762,7 @@ class HookedViT(HookedRootModule):
         if isinstance(dtype, str):
             # Convert from string to a torch dtype
             dtype = DTYPE_FROM_STRING[dtype]
+
         if "torch_dtype" in from_pretrained_kwargs:
             # For backwards compatibility with the previous way to do low precision loading
             # This should maybe check the user did not explicitly set dtype *and* torch_dtype
@@ -764,7 +777,6 @@ class HookedViT(HookedRootModule):
             )
 
         # Set up other parts of transformer
-        
         cfg = convert_pretrained_model_config(
             model_name,
             is_timm=is_timm,
@@ -774,8 +786,6 @@ class HookedViT(HookedRootModule):
         state_dict = get_pretrained_state_dict(
             model_name, is_timm, is_clip, cfg, hf_model, dtype=dtype, return_old_state_dict=True, **from_pretrained_kwargs
         )
-
-
 
         model = cls(cfg, move_to_device=False)
 

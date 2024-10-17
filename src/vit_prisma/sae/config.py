@@ -1,11 +1,11 @@
+import os
 from abc import ABC
 from dataclasses import dataclass
-from typing import Any, Optional, cast
-
 from dataclasses import fields, field
+from typing import Any, Optional, Dict, List
 
 import torch
-
+from transformers import ViTConfig
 
 
 @dataclass
@@ -17,6 +17,8 @@ class RunnerConfig(ABC):
     # Data Generating Function (Model + Training Distibuion)
     model_class_name: str = "HookedViT"
     model_name: str = "wkcn/TinyCLIP-ViT-40M-32-Text-19M-LAION400M"
+    vit_model_cfg: Optional[ViTConfig] = None
+    model_path: str = None
     hook_point_layer: int = 9
     hook_point_head_index: Optional[int] = None
     context_size: int = 50
@@ -75,10 +77,57 @@ class RunnerConfig(ABC):
             print(f"  {field.name}: {value}")
 
 
+
+@dataclass
+class EvalConfig(ABC):
+    evaluation_functions: List
+    log_frequency: Optional[int]
+    batch_size: int
+    max_evaluation_images: int
+    samples_per_bin: int  # Number of features to sample per pre-specified interval
+    max_images_per_feature: int  # Number of max images to collect per feature
+    patch_size: str
+
+
+@dataclass
+class TrainingEvalConfig(EvalConfig):
+    """Default values to be used when evaluating an SAE during training. These are less
+    compute and time costly as they get run every step.
+    """
+
+    evaluation_functions: List = field(
+        default_factory=lambda: []
+    )
+    log_frequency: Optional[int] = None
+    batch_size: int = 28
+    max_evaluation_images: int = 100
+    samples_per_bin: int = 10
+    max_images_per_feature: int = 20
+    patch_size: str = 32
+
+
+@dataclass
+class PostTrainingEvalConfig(EvalConfig):
+    """Default values to be used when evaluating an SAE post-training. These evaluations
+    are more extensive as they are run to get a complete picture of the quality of the
+    SAE.
+    """
+
+    evaluation_functions: Dict = field(
+        default_factory=lambda: ["plot_log_frequencies",]
+    )
+    log_frequency: Optional[int] = None
+    batch_size: int = 28
+    max_evaluation_images: int = 100
+    samples_per_bin: int = 10
+    max_images_per_feature: int = 20
+    patch_size: str = 32
+
+
 @dataclass
 class VisionModelSAERunnerConfig(RunnerConfig):
     """
-    Configuration for training a sparse autoencoder on a language model.
+    Configuration for training a sparse autoencoder on a vision model.
     """
 
     # Logging
@@ -99,11 +148,10 @@ class VisionModelSAERunnerConfig(RunnerConfig):
     )
     lr_warm_up_steps: int = 500
 
-    
     train_batch_size: int = 1024*4
 
     # Imagenet1k
-    dataset_name: str = 'imagenet1k' 
+    dataset_name: str = 'imagenet1k'  # imagenet1k | cifar10
     dataset_path: str = "/network/scratch/s/sonia.joseph/datasets/kaggle_datasets"
     dataset_train_path: str = "/network/scratch/s/sonia.joseph/datasets/kaggle_datasets/ILSVRC/Data/CLS-LOC/train"
     dataset_val_path: str = "/network/scratch/s/sonia.joseph/datasets/kaggle_datasets/ILSVRC/Data/CLS-LOC/val"
@@ -125,6 +173,11 @@ class VisionModelSAERunnerConfig(RunnerConfig):
     n_checkpoints: int = 10
     checkpoint_path: str = "/network/scratch/s/sonia.joseph/sae_checkpoints/tinyclip_40M_mlp_out"
 
+    # Evaluation
+    sae_path: str = '/network/scratch/s/sonia.joseph/sae_checkpoints/tinyclip_40M_mlp_out/1f89d99e-wkcn-TinyCLIP-ViT-40M-32-Text-19M-LAION400M-expansion-16/n_images_520028.pt'
+    training_eval: EvalConfig = TrainingEvalConfig()
+    post_training_eval: EvalConfig = PostTrainingEvalConfig()
+
     def __post_init__(self):
         super().__post_init__()
         if not isinstance(self.expansion_factor, list):
@@ -142,7 +195,6 @@ class VisionModelSAERunnerConfig(RunnerConfig):
             )
 
         self.device = torch.device(self.device)
-
 
         # Print out some useful info:
         n_tokens_per_buffer = (
@@ -195,8 +247,6 @@ class VisionModelSAERunnerConfig(RunnerConfig):
 
         self.activation_fn_kwargs = self.activation_fn_kwargs or {}
 
-
-from dataclasses import dataclass;
 
 @dataclass
 class CacheActivationsRunnerConfig(RunnerConfig):

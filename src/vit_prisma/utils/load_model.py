@@ -1,17 +1,13 @@
-from typing import Any, cast
-
-import torch
+from typing import Any
 
 from vit_prisma.models.base_vit import HookedViT
-from vit_prisma.prisma_tools.hooked_root_module import HookedRootModule
+from vit_prisma.sae.config import VisionModelSAERunnerConfig
 
 
 def load_model(
-    model_class_name: str,
-    model_name: str,
-    device: str | torch.device | None = None,
-    model_from_pretrained_kwargs: dict[str, Any] | None = None,
-) -> HookedRootModule:
+    cfg: VisionModelSAERunnerConfig,
+    model_from_pretrained_kwargs: dict[str, Any] | None = None
+) -> HookedViT:
     model_from_pretrained_kwargs = model_from_pretrained_kwargs or {}
     
     if "n_devices" in model_from_pretrained_kwargs:
@@ -23,16 +19,21 @@ def load_model(
             device = "cuda"
             print("-------------")
 
-    if model_class_name == "HookedViT":
-        is_timm, is_clip = set_flags(model_name)
-        return HookedViT.from_pretrained(model_name, is_timm=is_timm, is_clip=is_clip).to(device)
-    
+    if cfg.model_class_name == "HookedViT":
+        is_timm, is_clip, is_local = set_flags(cfg.model_name)
+
+        if is_local:
+            return HookedViT.from_local(cfg.prisma_vit_cfg, cfg.model_path)
+
+        return HookedViT.from_pretrained(cfg.model_name, is_timm=is_timm, is_clip=is_clip).to(cfg.device)
+
     else:  # pragma: no cover
-        raise ValueError(f"Unknown model class: {model_class_name}")
+        raise ValueError(f"Unknown model class: {cfg.model_class_name}")
     
 
 def set_flags(model_name):
     model_name_lower = model_name.lower()
     is_clip = 'clip' in model_name_lower
-    is_timm = not is_clip
-    return is_timm, is_clip
+    is_local = 'local' in model_name_lower
+    is_timm = (not is_clip) and (not is_local)
+    return is_timm, is_clip, is_local

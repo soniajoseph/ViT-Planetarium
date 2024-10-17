@@ -142,6 +142,7 @@ class VisionActivationsStore:
         stacked_activations = torch.stack(activations_list, dim=2)
 
         return stacked_activations
+
     def get_buffer(self, n_batches_in_buffer: int):
         context_size = self.cfg.context_size
         batch_size = self.cfg.store_batch_size

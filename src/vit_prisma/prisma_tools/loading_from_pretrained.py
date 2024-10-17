@@ -602,7 +602,6 @@ def remove_open_clip_prefix(text, prefix="open-clip:"):
     return text 
 
 def convert_pretrained_model_config(model_name: str, is_timm: bool = True, is_clip: bool = False) -> HookedViTConfig:
-    
     if 'dino' in model_name:
         is_timm = False
         

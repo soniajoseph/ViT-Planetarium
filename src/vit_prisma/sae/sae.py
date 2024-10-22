@@ -377,7 +377,7 @@ class SparseAutoencoder(HookedRootModule):
                 f"Unexpected file extension: {path}, supported extensions are .pt and .pkl.gz"
             )
 
-        print(f"Saved model to {path}")
+        print(f"Saved SAE to {path}")
 
     @classmethod
     def load_from_pretrained_legacy_saelens_v2(cls, path: str, current_cfg=None):

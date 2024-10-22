@@ -1,5 +1,5 @@
 
-from vit_prisma.utils.data_utils.imagenet_dict import IMAGENET_DICT
+from vit_prisma.utils.data_utils.imagenet.imagenet_dict import IMAGENET_DICT
 
 import os
 

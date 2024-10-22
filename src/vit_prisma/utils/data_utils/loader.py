@@ -58,7 +58,7 @@ def load_dataset(cfg, model_type="clip", visualize=False):
             data_transforms,
             return_index=True,
         )
-        if visualize:  # TODO-EdS: Is this necessary?
+        if visualize:
             val_data_visualize = ImageNetValidationDataset(
                 cfg.dataset_val_path,
                 imagenet_paths["label_strings"],
@@ -74,10 +74,6 @@ def load_dataset(cfg, model_type="clip", visualize=False):
         else:
             val_data_visualize = None
 
-        train_data = SubsetDataset(
-            train_data, 10000
-        )  # TODO EdS: Delete this - just for testing
-        val_data = SubsetDataset(val_data, 1000)
         print(f"Train data length: {len(train_data)}") if cfg.verbose else None
         print(f"Validation data length: {len(val_data)}") if cfg.verbose else None
         return train_data, val_data, val_data_visualize

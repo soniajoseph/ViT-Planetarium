@@ -1,10 +1,8 @@
-import argparse
-import json
 import os
 from contextlib import contextmanager
-from dataclasses import asdict, fields
+from dataclasses import fields
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional
+from typing import Dict, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -34,6 +32,7 @@ from vit_prisma.sae.evals.eval_utils import (
 )
 from vit_prisma.sae.sae import SparseAutoencoder
 from vit_prisma.sae.sae_utils import wandb_log_suffix
+from vit_prisma.utils.constants import EvaluationContext
 
 
 @contextmanager
@@ -60,26 +59,30 @@ class Evaluator:
         model and dataset.
         """
         self.model = model
-        self.data = data  # TODO-EdS: Storing each of these is overkill
-        self.dataloader = DataLoader(
-            data,
-            batch_size=cfg.post_training_eval.batch_size,
-            shuffle=False,
-            num_workers=4,
-        )
+        self.data = data
         self.visualize_data = visualize_data
         self.cfg = cfg
         self._evaluation_cfg = None
+        self.neuron_indices = list(range(self.cfg.d_in))
 
     @property
     def evaluation_cfg(self):
         return self._evaluation_cfg
 
+    @property
+    def dataloader(self):
+        return DataLoader(
+            self.data,
+            batch_size=self.evaluation_cfg.batch_size,
+            shuffle=False,
+            num_workers=0,
+        )
+
     @evaluation_cfg.setter
-    def evaluation_cfg(self, context: str):
-        if context == "training":
+    def evaluation_cfg(self, context: EvaluationContext):
+        if context == EvaluationContext.TRAINING:
             self._evaluation_cfg = self.cfg.training_eval
-        elif context == "post-training":
+        elif context == EvaluationContext.POST_TRAINING:
             self._evaluation_cfg = self.cfg.post_training_eval
         else:
             raise ValueError(
@@ -87,35 +90,40 @@ class Evaluator:
                 "'post-training')"
             )
 
-    def evaluate(self, sae: SparseAutoencoder, context: str = "training"):
-        """The type of evaluation is determined by the class of the evaluation config
-        passed in. It run all the evaluation functions in a given EvalConfig.
+    def evaluate(
+        self,
+        sae: SparseAutoencoder,
+        context: EvaluationContext = EvaluationContext.TRAINING,
+    ):
+        """The type of evaluation is determined by the `context` parameter. All
+        evaluations functions specified in the `EvalConfig` are run.
         """
         self.evaluation_cfg = context
+        print(f"Performing {context.value} mode evaluation on SAE")
+
         with eval_mode(sae):
             stats = self.process_dataset(sae)
-            suffix = wandb_log_suffix(sae.cfg, self.cfg)
-            self.save_stats(stats, suffix)
+            self.save_stats(sae, stats)
 
             for func_name in self.evaluation_cfg.evaluation_functions:
-                print(f"Running the evaluation: {func_name}")
-                eval_func = getattr(self, func_name, None)
+                print(f"Running the evaluation: {func_name.value}")
+                eval_func = getattr(self, func_name.value, None)
                 if eval_func:
                     eval_func(sae, stats)
                 else:
-                    print(f"Warning: Evaluation function '{func_name}' not implemented")
+                    print(
+                        f"Warning: Evaluation function '{func_name.value}' not implemented"
+                    )
 
     def process_dataset(self, sae):
         """This function evaluates the performance of a sparse autoencoder on a dataset,
         computing statistics such as L0 sparsity, reconstruction quality, and loss
         metrics.
 
-        NB. Currently the function assumes the use of ImageNet dataset.
+        NB. Currently the function assumes the use of ImageNet dataset and a CLIP model.
         """
         all_l0 = []
         all_l0_cls = []
-
-        # image level l0
         all_l0_image = []
 
         total_loss = 0
@@ -131,10 +139,7 @@ class Evaluator:
         total_tokens = 0
 
         with torch.no_grad():
-            # TODO-EdS: We break early which means that the tqdm bar is incorrect
-            for batch_tokens, gt_labels, indices in tqdm(
-                self.dataloader, desc="Collecting evaluation stats"
-            ):
+            for batch_tokens, gt_labels, indices in self.dataloader:
                 batch_tokens = batch_tokens.to(self.cfg.device)
                 batch_size = batch_tokens.shape[0]
 
@@ -157,7 +162,6 @@ class Evaluator:
                     total_acts += sae_activations.sum(0)
 
                 total_tokens += sae_activations.shape[0]
-                # total_images += batch_size
 
                 # Get L0 stats per token
                 l0 = (feature_acts[:, 1:, :] > 0).float().sum(-1).detach()
@@ -222,7 +226,7 @@ class Evaluator:
             total_acts, total_samples, self.cfg
         )
 
-        stats = EvalStats(
+        return EvalStats(
             avg_loss,
             avg_cos_sim,
             avg_reconstruction_loss,
@@ -233,40 +237,37 @@ class Evaluator:
             log_frequencies_per_token,
             log_frequencies_per_image,
         )
-        print(stats)
-        return stats
 
-    def save_stats(self, stats: EvalStats, suffix: str):
-        """Store the evaluation stats in a json file with the same name as the saved
-        sae, in the same directory, and also log to wandb."""
-        stats_filename = f"{Path(self.cfg.sae_path).with_suffix('')}_stats.json"
+    def save_stats(self, sae: SparseAutoencoder, stats: EvalStats):
+        """Store the evaluation stats to wandb."""
 
-        # Custom JSON encoder to handle NumPy types
-        class NumpyEncoder(json.JSONEncoder):
-            def default(self, obj):
-                if isinstance(obj, np.ndarray):
-                    return obj.tolist()
-                if isinstance(obj, np.integer):
-                    return int(obj)
-                if isinstance(obj, np.floating):
-                    return float(obj)
-                return super(NumpyEncoder, self).default(obj)
+        print(f"Logging evaluation stats to wandb") if self.cfg.verbose else None
+        suffix = wandb_log_suffix(sae.cfg, self.cfg)
 
-        # Save the stats to a JSON file
-        with open(stats_filename, "w") as f:
-            # json.dump(stats_dict, f, indent=4, cls=NumpyEncoder)
-            json.dump(asdict(stats), f, indent=4, cls=NumpyEncoder)
-
-        print(f"Stats saved to {stats_filename}")
         metrics = {
             f"validation/{field.name}{suffix}": getattr(stats, field.name)
             for field in fields(stats)
         }
-        wandb.log(
-            metrics
-        )  # , step=n_training_steps)  # TODO-ES: Need to get the training step for training validaiton
+        if self.cfg.log_to_wandb:
+            wandb.log(metrics)
 
-    def plot_log_frequencies(self, sae, stats: EvalStats):
+    def evaluate_sae_features(self, sae, stats: EvalStats):
+        """Plot and analyze log frequencies of feature activations for an SAE.
+
+        This function performs several tasks:
+            1. Visualises sparsity patterns across different activation frequency ranges.
+            2. Samples representative features from different activation frequency
+                intervals of interest.
+            3. Identifies top-activating images for sampled features.
+            4. Generates and saves visualizations of these top-activating images with
+                activation heatmaps.
+
+        NB:
+            - The function assumes the use of an ImageNet dataset.
+            - The function saves output images in a directory structure based on the
+                SAE checkpoint path.
+        """
+
         print("Plotting log frequencies...")
         log_freq_tokens = torch.Tensor(stats.log_frequencies_per_token)
         log_freq_images = torch.Tensor(stats.log_frequencies_per_image)
@@ -309,24 +310,19 @@ class Evaluator:
                 f"{condition_text}"
             ] * len(sampled_indices)
 
-        # for v,i, c in zip(interesting_features_indices, interesting_features_values, interesting_features_category):
-        #     print(c, v,i)
-
         print(set(interesting_features_category))
 
         print("Running through dataset to get top images per feature...")
-        this_max = self.evaluation_cfg.max_evaluation_images
         max_indices = {i: None for i in interesting_features_indices}
         max_values = {i: None for i in interesting_features_indices}
         b_enc = sae.b_enc[interesting_features_indices]
         W_enc = sae.W_enc[:, interesting_features_indices]
 
-        for batch_idx, (total_images, total_labels, total_indices) in tqdm(
-            enumerate(self.dataloader), total=this_max // self.evaluation_cfg.batch_size
+        for batch_idx, (total_images, total_labels, total_indices) in enumerate(
+            self.dataloader
         ):
             total_images = total_images.to(self.cfg.device)
             total_indices = total_indices.to(self.cfg.device)
-            batch_size = total_images.shape[0]
 
             new_top_info = highest_activating_tokens(
                 total_images,
@@ -338,82 +334,229 @@ class Evaluator:
             )  # Return all
 
             for feature_id in interesting_features_indices:
-                feature_data = new_top_info[feature_id]
-                batch_image_indices = torch.tensor(feature_data["image_indices"])
-                token_indices = torch.tensor(feature_data["token_indices"])
-                token_activation_values = torch.tensor(
-                    feature_data["values"], device=self.cfg.device
-                )
-                global_image_indices = total_indices[
-                    batch_image_indices
-                ]  # Get global indices
-
-                # get unique image_indices
-                # Get unique image indices and their highest activation values
-                unique_image_indices, unique_indices = torch.unique(
-                    global_image_indices, return_inverse=True
-                )
-                unique_activation_values = torch.zeros_like(
-                    unique_image_indices, dtype=torch.float, device=self.cfg.device
-                )
-                unique_activation_values.index_reduce_(
-                    0, unique_indices, token_activation_values, "amax"
+                self._update_top_activations(
+                    feature_id,
+                    new_top_info[feature_id],
+                    total_indices,
+                    max_indices,
+                    max_values,
                 )
 
-                if max_indices[feature_id] is None:
-                    max_indices[feature_id] = unique_image_indices
-                    max_values[feature_id] = unique_activation_values
-                else:
-                    # Concatenate with existing data
-                    all_indices = torch.cat(
-                        (max_indices[feature_id], unique_image_indices)
-                    )
-                    all_values = torch.cat(
-                        (max_values[feature_id], unique_activation_values)
-                    )
-
-                    # Get unique indices again (in case of overlap between batches)
-                    unique_all_indices, unique_all_idx = torch.unique(
-                        all_indices, return_inverse=True
-                    )
-                    unique_all_values = torch.zeros_like(
-                        unique_all_indices, dtype=torch.float
-                    )
-                    unique_all_values.index_reduce_(
-                        0, unique_all_idx, all_values, "amax"
-                    )
-
-                    # Select top k
-                    if (
-                        len(unique_all_indices)
-                        > self.evaluation_cfg.max_images_per_feature
-                    ):
-                        _, top_k_idx = torch.topk(
-                            unique_all_values,
-                            k=self.evaluation_cfg.max_images_per_feature,
-                        )
-                        max_indices[feature_id] = unique_all_indices[top_k_idx]
-                        max_values[feature_id] = unique_all_values[top_k_idx]
-                    else:
-                        max_indices[feature_id] = unique_all_indices
-                        max_values[feature_id] = unique_all_values
-
-            if batch_idx * self.evaluation_cfg.batch_size >= this_max:
+            if (
+                batch_idx * self.evaluation_cfg.batch_size
+                >= self.evaluation_cfg.max_evaluation_images
+            ):
                 break
 
         top_per_feature = {
             i: (max_values[i].detach().cpu(), max_indices[i].detach().cpu())
             for i in interesting_features_indices
         }
+        self._plot_top_activating_images(
+            sae,
+            top_per_feature,
+            interesting_features_category,
+            interesting_features_indices,
+        )
+
+    def find_top_activations_for_neurons(
+        self,
+        sae: SparseAutoencoder,
+        stats: EvalStats,
+        top_k: int = 16,
+    ) -> Dict[int, Tuple[torch.Tensor, torch.Tensor]]:
+        max_samples = self.evaluation_cfg.max_evaluation_images
+
+        top_activations = {i: (None, None) for i in self.neuron_indices}
+
+        processed_samples = 0
+        for batch_images, _, batch_indices in self.dataloader:
+            batch_images = batch_images.to(self.cfg.device)
+            batch_indices = batch_indices.to(self.cfg.device)
+            batch_size = batch_images.shape[0]
+
+            batch_activations = compute_neuron_activations(
+                batch_images,
+                self.model,
+                self.cfg.hook_point,
+                self.neuron_indices,
+                top_k,
+            )
+
+            for neuron_idx in self.neuron_indices:
+                new_indices, new_values = batch_activations[neuron_idx]
+                new_indices = batch_indices[new_indices]
+
+                if top_activations[neuron_idx][0] is None:
+                    top_activations[neuron_idx] = (new_values, new_indices)
+                else:
+                    combined_values = torch.cat(
+                        (top_activations[neuron_idx][0], new_values)
+                    )
+                    combined_indices = torch.cat(
+                        (top_activations[neuron_idx][1], new_indices)
+                    )
+                    _, top_k_indices = torch.topk(combined_values, top_k)
+                    top_activations[neuron_idx] = (
+                        combined_values[top_k_indices],
+                        combined_indices[top_k_indices],
+                    )
+
+            processed_samples += batch_size
+            if processed_samples >= max_samples:
+                break
+
+        top_activations_per_neuron = {
+            i: (values.detach().cpu(), indices.detach().cpu())
+            for i, (values, indices) in top_activations.items()
+        }
+        self._visualize_top_activations(sae, top_activations_per_neuron)
+
+    def _visualize_top_activations(
+        self,
+        sae: SparseAutoencoder,
+        top_activations_per_neuron: int,
+    ):
+        ind_to_name = get_imagenet_index_to_name()
+        parent_dir = Path(self.cfg.sae_path).parent
+        folder = str(parent_dir / "max_images")
+        os.makedirs(folder, exist_ok=True)
+        print(f"Saving top activations images to {folder}")
+
+        for neuron_idx in tqdm(self.neuron_indices, total=len(self.neuron_indices)):
+            max_vals, max_inds = top_activations_per_neuron[neuron_idx]
+            images = []
+            model_images = []
+            gt_labels = []
+
+            for bid, v in zip(max_inds, max_vals):
+                image, label, image_ind = self.visualize_data[bid]
+                assert image_ind.item() == bid
+                images.append(image)
+
+                model_image, _, _ = self.data[bid]
+                model_images.append(model_image)
+                gt_labels.append(ind_to_name[str(label)][1])
+
+            grid_size = int(np.ceil(np.sqrt(len(images))))
+            fig, axs = plt.subplots(
+                int(np.ceil(len(images) / grid_size)), grid_size, figsize=(15, 15)
+            )
+            name = f"Layer: {self.cfg.hook_point}, Neuron: {neuron_idx}"
+            fig.suptitle(name)
+
+            for ax in axs.flatten():
+                ax.axis("off")
+
+            complete_bid = []
+
+            for i, (image_tensor, label, val, bid, model_img) in enumerate(
+                zip(images, gt_labels, max_vals, max_inds, model_images)
+            ):
+                image_tensor, model_img = image_tensor.to(
+                    self.cfg.device
+                ), model_img.to(self.cfg.device)
+
+                if bid in complete_bid:
+                    continue
+                complete_bid.append(bid)
+
+                row = i // grid_size
+                col = i % grid_size
+                heatmap = get_heatmap(model_img, self.model, sae, neuron_idx)
+                heatmap = image_patch_heatmap(
+                    heatmap,
+                    image_size=self.cfg.image_size,
+                    pixel_num=self.cfg.num_patch,
+                )
+
+                display = image_tensor.numpy().transpose(1, 2, 0)
+
+                axs[row, col].imshow(display)
+                axs[row, col].imshow(
+                    heatmap, cmap="viridis", alpha=0.3
+                )  # Overlaying the heatmap
+                axs[row, col].set_title(f"{label} {val.item():0.03f}")
+                axs[row, col].axis("off")
+
+            plt.tight_layout()
+
+            plt.savefig(os.path.join(folder, f"neuron_{neuron_idx}.png"))
+            plt.close()
+
+    def _update_top_activations(
+        self,
+        feature_id: int,
+        feature_data: Dict,
+        total_indices: torch.Tensor,
+        max_indices: Dict[int, torch.Tensor],
+        max_values: Dict[int, torch.Tensor],
+    ):
+        batch_image_indices = torch.tensor(feature_data["image_indices"])
+        token_activation_values = torch.tensor(
+            feature_data["values"], device=self.cfg.device
+        )
+        global_image_indices = total_indices[batch_image_indices]  # Get global indices
+
+        # Get unique image indices and their highest activation values
+        unique_image_indices, unique_indices = torch.unique(
+            global_image_indices, return_inverse=True
+        )
+        unique_activation_values = torch.zeros_like(
+            unique_image_indices, dtype=torch.float, device=self.cfg.device
+        )
+        unique_activation_values.index_reduce_(
+            0, unique_indices, token_activation_values, "amax"
+        )
+
+        if max_indices[feature_id] is None:
+            max_indices[feature_id] = unique_image_indices
+            max_values[feature_id] = unique_activation_values
+        else:
+            # Concatenate with existing data
+            all_indices = torch.cat((max_indices[feature_id], unique_image_indices))
+            all_values = torch.cat((max_values[feature_id], unique_activation_values))
+
+            # Get unique indices again (in case of overlap between batches)
+            unique_all_indices, unique_all_idx = torch.unique(
+                all_indices, return_inverse=True
+            )
+            unique_all_values = torch.zeros_like(unique_all_indices, dtype=torch.float)
+            unique_all_values.index_reduce_(0, unique_all_idx, all_values, "amax")
+
+            # Select top k
+            if len(unique_all_indices) > self.evaluation_cfg.max_images_per_feature:
+                _, top_k_idx = torch.topk(
+                    unique_all_values,
+                    k=self.evaluation_cfg.max_images_per_feature,
+                )
+                max_indices[feature_id] = unique_all_indices[top_k_idx]
+                max_values[feature_id] = unique_all_values[top_k_idx]
+            else:
+                max_indices[feature_id] = unique_all_indices
+                max_values[feature_id] = unique_all_values
+
+    def _plot_top_activating_images(
+        self,
+        sae: SparseAutoencoder,
+        top_per_feature,
+        interesting_features_category,
+        interesting_features_values,
+    ):
+        # Create a new folder path in sae_checkpoints/images with the original name
+        output_dir = Path(self.cfg.sae_path).parent / "max_images"
+        os.makedirs(output_dir, exist_ok=True)
+        print(
+            f"Saving the images that represent the feature density of interest in the"
+            f" directory {output_dir}"
+        )
+
         ind_to_name = get_imagenet_index_to_name()
 
-        for feature_ids, cat, logfreq in tqdm(
-            zip(
-                top_per_feature.keys(),
-                interesting_features_category,
-                interesting_features_values,
-            ),
-            total=len(interesting_features_category),
+        for feature_ids, cat, logfreq in zip(
+            top_per_feature.keys(),
+            interesting_features_category,
+            interesting_features_values,
         ):
             max_vals, max_inds = top_per_feature[feature_ids]
             images = []
@@ -444,6 +587,10 @@ class Evaluator:
             for i, (image_tensor, label, val, bid, model_img) in enumerate(
                 zip(images, gt_labels, max_vals, max_inds, model_images)
             ):
+                image_tensor, model_img = image_tensor.to(
+                    self.cfg.device
+                ), model_img.to(self.cfg.device)
+
                 if bid in complete_bid:
                     continue
                 complete_bid.append(bid)
@@ -451,13 +598,11 @@ class Evaluator:
                 row = i // grid_size
                 col = i % grid_size
 
-                heatmap = get_heatmap(
-                    model_img, self.model, sae, feature_ids, self.cfg.device
-                )
+                heatmap = get_heatmap(model_img, self.model, sae, feature_ids)
                 heatmap = image_patch_heatmap(
                     heatmap,
                     image_size=self.cfg.image_size,
-                    pixel_num=self.evaluation_cfg.patch_size,
+                    pixel_num=self.cfg.num_patch,
                 )
                 display = image_tensor.numpy().transpose(1, 2, 0)
 
@@ -474,12 +619,7 @@ class Evaluator:
 
             plt.tight_layout()
 
-            # Create a new folder path in sae_checkpoints/images with the original name
-            parent_dir = os.path.dirname(self.cfg.sae_path)
-            max_image_output_folder = os.path.join(parent_dir, "max_images")
-            os.makedirs(max_image_output_folder, exist_ok=True)
-
-            folder = os.path.join(max_image_output_folder, f"{cat}")
+            folder = os.path.join(output_dir, f"{cat}")
             os.makedirs(folder, exist_ok=True)
             plt.savefig(
                 os.path.join(
@@ -492,182 +632,4 @@ class Evaluator:
                     folder, f"neglogfreq_{-logfreq}_feature_id:{feature_ids}.svg"
                 )
             )
-            plt.close()
-
-    @torch.no_grad()
-    def compute_neuron_activations(
-        self,
-        images: torch.Tensor,
-        model: torch.nn.Module,
-        layer_name: str,
-        neuron_indices: List[int],
-        top_k: int = 10,
-    ) -> Dict[int, Tuple[torch.Tensor, torch.Tensor]]:
-        """
-        Compute the highest activating tokens for given neurons in a batch of images.
-
-        Args:
-            images: Input images
-            model: The main model
-            layer_name: Name of the layer to analyze
-            neuron_indices: List of neuron indices to analyze
-            top_k: Number of top activations to return per neuron
-
-        Returns:
-            Dictionary mapping neuron indices to tuples of (top_indices, top_values)
-        """
-        _, cache = model.run_with_cache(images, names_filter=[layer_name])
-
-        layer_activations = cache[layer_name]
-
-        batch_size, seq_len, n_neurons = layer_activations.shape
-
-        top_activations = {}
-        top_k = min(top_k, batch_size)
-
-        for neuron_idx in neuron_indices:
-            # Compute mean activation across sequence length
-            mean_activations = layer_activations[:, :, neuron_idx].mean(dim=1)
-            # Get top-k activations
-            top_values, top_indices = mean_activations.topk(top_k)
-            top_activations[neuron_idx] = (top_indices, top_values)
-
-        return top_activations
-
-    def find_top_activations_for_neurons(
-        self,
-        val_dataloader: torch.utils.data.DataLoader,
-        model: torch.nn.Module,
-        cfg: object,
-        layer_name: str,
-        neuron_indices: List[int],
-        top_k: int = 16,
-    ) -> Dict[int, Tuple[torch.Tensor, torch.Tensor]]:
-        """
-        Find the top activations for specific neurons across the validation dataset.
-
-        Args:
-            val_dataloader: Validation data loader
-            model: The main model
-            cfg: Configuration object
-            layer_name: Name of the layer to analyze
-            neuron_indices: Indices of neurons to analyze
-            top_k: Number of top activations to return per neuron
-
-        Returns:
-            Dictionary mapping neuron indices to tuples of (top_values, top_indices)
-        """
-        max_samples = cfg.eval_max
-
-        top_activations = {i: (None, None) for i in neuron_indices}
-
-        processed_samples = 0
-        for batch_images, _, batch_indices in tqdm(
-            val_dataloader, total=max_samples // cfg.batch_size
-        ):
-            batch_images = batch_images.to(cfg.device)
-            batch_indices = batch_indices.to(cfg.device)
-            batch_size = batch_images.shape[0]
-
-            batch_activations = compute_neuron_activations(
-                batch_images, model, layer_name, neuron_indices, top_k
-            )
-
-            for neuron_idx in neuron_indices:
-                new_indices, new_values = batch_activations[neuron_idx]
-                new_indices = batch_indices[new_indices]
-
-                if top_activations[neuron_idx][0] is None:
-                    top_activations[neuron_idx] = (new_values, new_indices)
-                else:
-                    combined_values = torch.cat(
-                        (top_activations[neuron_idx][0], new_values)
-                    )
-                    combined_indices = torch.cat(
-                        (top_activations[neuron_idx][1], new_indices)
-                    )
-                    _, top_k_indices = torch.topk(combined_values, top_k)
-                    top_activations[neuron_idx] = (
-                        combined_values[top_k_indices],
-                        combined_indices[top_k_indices],
-                    )
-
-            processed_samples += batch_size
-            if processed_samples >= max_samples:
-                break
-
-        return {
-            i: (values.detach().cpu(), indices.detach().cpu())
-            for i, (values, indices) in top_activations.items()
-        }
-
-    def visualize_top_activations(
-        self,
-        model,
-        val_data,
-        val_data_visualize,
-        top_activations_per_neuron,
-        layer_name,
-        neuron_indices,
-        ind_to_name,
-        cfg,
-    ):
-        print("Saving to ", cfg.max_image_output_folder)
-        for neuron_idx in tqdm(neuron_indices, total=len(neuron_indices)):
-            max_vals, max_inds = top_activations_per_neuron[neuron_idx]
-            images = []
-            model_images = []
-            gt_labels = []
-
-            for bid, v in zip(max_inds, max_vals):
-                image, label, image_ind = val_data_visualize[bid]
-                assert image_ind.item() == bid
-                images.append(image)
-
-                model_image, _, _ = val_data[bid]
-                model_images.append(model_image)
-                gt_labels.append(ind_to_name[str(label)][1])
-
-            grid_size = int(np.ceil(np.sqrt(len(images))))
-            fig, axs = plt.subplots(
-                int(np.ceil(len(images) / grid_size)), grid_size, figsize=(15, 15)
-            )
-            name = f"Layer: {layer_name}, Neuron: {neuron_idx}"
-            fig.suptitle(name)
-
-            for ax in axs.flatten():
-                ax.axis("off")
-
-            complete_bid = []
-
-            for i, (image_tensor, label, val, bid, model_img) in enumerate(
-                zip(images, gt_labels, max_vals, max_inds, model_images)
-            ):
-                if bid in complete_bid:
-                    continue
-                complete_bid.append(bid)
-
-                row = i // grid_size
-                col = i % grid_size
-                heatmap = get_heatmap(model_img, model, layer_name, neuron_idx)
-                heatmap = image_patch_heatmap(
-                    heatmap,
-                    image_size=self.cfg.image_size,
-                    pixel_num=self.evaluation_cfg.patch_size,
-                )
-
-                display = image_tensor.numpy().transpose(1, 2, 0)
-
-                axs[row, col].imshow(display)
-                axs[row, col].imshow(
-                    heatmap, cmap="viridis", alpha=0.3
-                )  # Overlaying the heatmap
-                axs[row, col].set_title(f"{label} {val.item():0.03f}")
-                axs[row, col].axis("off")
-
-            plt.tight_layout()
-
-            folder = os.path.join(cfg.max_image_output_folder, f"{layer_name}")
-            os.makedirs(folder, exist_ok=True)
-            plt.savefig(os.path.join(folder, f"neuron_{neuron_idx}.png"))
             plt.close()

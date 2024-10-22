@@ -12,7 +12,7 @@ import os
 from vit_prisma.models.base_vit import HookedViT
  
 # load dataset
-from vit_prisma.utils.data_utils.imagenet_utils import setup_imagenet_paths
+from vit_prisma.utils.data_utils.imagenet.imagenet_utils import setup_imagenet_paths
 from vit_prisma.dataloaders.imagenet_dataset import get_imagenet_transforms_clip, ImageNetValidationDataset
 
 from dataclasses import dataclass

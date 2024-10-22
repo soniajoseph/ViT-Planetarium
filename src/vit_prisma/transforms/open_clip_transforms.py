@@ -1,7 +1,6 @@
-import torch
 from torchvision import transforms
 from torchvision.transforms.functional import InterpolationMode
-from PIL import Image
+
 
 def _convert_to_rgb(image):
     return image.convert('RGB')

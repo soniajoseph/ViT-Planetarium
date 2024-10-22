@@ -1,3 +1,4 @@
+import copy
 import os
 import re
 import sys
@@ -16,6 +17,7 @@ from vit_prisma.sae.sae_utils import wandb_log_suffix
 from vit_prisma.sae.training.activations_store import VisionActivationsStore
 from vit_prisma.sae.training.geometric_median import compute_geometric_median
 from vit_prisma.sae.training.get_scheduler import get_scheduler
+from vit_prisma.utils.constants import EvaluationContext
 from vit_prisma.utils.data_utils.loader import load_dataset
 from vit_prisma.utils.load_model import load_model
 
@@ -42,6 +44,7 @@ class VisionSAETrainer:
 
         self.cfg.pretty_print() if self.cfg.verbose else None
 
+        # TODO EdS: Evaluator should use the ActivationStore
         self.evaluator = Evaluator(self.model, eval_dataset, self.cfg, visualize_eval_dataset)
 
     def set_default_attributes(self):
@@ -143,7 +146,7 @@ class VisionSAETrainer:
         # Forward and Backward Passes
         sae_out, feature_acts, loss, mse_loss, l1_loss, ghost_grad_loss = sparse_autoencoder(sae_in, ghost_grad_neuron_mask)
         
-        with torch.no_grad():
+        with (torch.no_grad()):
             did_fire = (feature_acts > 0).float().sum(-2) > 0
             n_forward_passes_since_fired += 1
             n_forward_passes_since_fired[did_fire] = 0
@@ -158,8 +161,8 @@ class VisionSAETrainer:
                 self._log_metrics(sparse_autoencoder, hyperparams, optimizer, sae_in, sae_out, n_forward_passes_since_fired, 
                                 ghost_grad_neuron_mask, mse_loss, l1_loss, ghost_grad_loss, loss, l0, n_training_steps, n_training_tokens)
 
-            if self.cfg.log_to_wandb and self.cfg.training_eval.log_frequency and ((n_training_steps + 1) % self.cfg.training_eval.log_frequency == 0):
-                self.evaluator.evaluate(sparse_autoencoder, context="training")
+            if self.cfg.training_eval.eval_frequency and ((n_training_steps + 1) % self.cfg.training_eval.eval_frequency == 0):
+                self.evaluator.evaluate(sparse_autoencoder, context=EvaluationContext.TRAINING)
 
         loss.backward()
         
@@ -384,8 +387,8 @@ class VisionSAETrainer:
         self.checkpoint(self.sae, n_training_tokens, act_freq_scores, n_frac_active_tokens)
         print(f"Final checkpoint saved at {n_training_tokens} tokens") if self.cfg.verbose else None
 
-        if self.cfg.post_training_eval.log_frequency:
-            self.evaluator.evaluate(self.sae, context="post-training")
+        if self.cfg.post_training_eval.eval_frequency:
+            self.evaluator.evaluate(self.sae, context=EvaluationContext.TRAINING)
 
         pbar.close()
 

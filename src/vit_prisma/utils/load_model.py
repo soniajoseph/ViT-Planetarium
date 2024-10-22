@@ -23,7 +23,7 @@ def load_model(
         is_timm, is_clip, is_local = set_flags(cfg.model_name)
 
         if is_local:
-            return HookedViT.from_local(cfg.prisma_vit_cfg, cfg.model_path)
+            return HookedViT.from_local(cfg.prisma_vit_cfg, cfg.model_path).to(cfg.device)
 
         return HookedViT.from_pretrained(cfg.model_name, is_timm=is_timm, is_clip=is_clip).to(cfg.device)
 

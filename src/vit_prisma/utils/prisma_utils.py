@@ -16,8 +16,8 @@ import re
 import json
 import logging
 
-from vit_prisma.utils.data_utils.imagenet_dict import IMAGENET_DICT
-from vit_prisma.utils.data_utils.imagenet_utils import imagenet_index_from_word
+from vit_prisma.utils.data_utils.imagenet.imagenet_dict import IMAGENET_DICT
+from vit_prisma.utils.data_utils.imagenet.imagenet_utils import imagenet_index_from_word
 
 
 def test_prompt(example_data_point: torch.Tensor, model: Any, example_answer: Optional[str] = None, top_k: int = 10) -> None:

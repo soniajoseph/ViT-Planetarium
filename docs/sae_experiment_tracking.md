@@ -76,6 +76,7 @@ To manually kick off a post-training evaluation on a saved SAE:
 model = load_model(cfg)
 sae = load_sae(cfg)
 train_data, val_data, val_data_visualize = load_dataset(cfg)
+wandb.init(project=cfg.wandb_project, name=cfg.run_name)
 evaluator = Evaluator(model, val_data, cfg, visualize_data=val_data_visualize)
 evaluator.evaluate(sae, context="post-training")
 ```

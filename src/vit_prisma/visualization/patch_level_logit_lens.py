@@ -6,7 +6,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union, cast
 
 import torch
 
-from vit_prisma.utils.data_utils.imagenet_emoji import IMAGENET_EMOJI
+from vit_prisma.utils.data_utils.imagenet.imagenet_emoji import IMAGENET_EMOJI
 
 def display_grid_on_image_with_heatmap(
     image: Union[np.ndarray, torch.Tensor], 

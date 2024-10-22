@@ -17,6 +17,7 @@ install_requires = [
     'wandb',
     'matplotlib',
     'kaleido',
+    'open-clip-torch',
 ]
 
 setup(

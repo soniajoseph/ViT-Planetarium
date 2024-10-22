@@ -1,3 +1,4 @@
+import math
 import os
 from abc import ABC
 from dataclasses import dataclass
@@ -6,6 +7,8 @@ from typing import Any, Optional, Dict, List
 
 import torch
 from transformers import ViTConfig
+
+from vit_prisma.utils.constants import Evaluation
 
 
 @dataclass
@@ -60,6 +63,8 @@ class RunnerConfig(ABC):
     def __post_init__(self):
         self.hook_point = f"blocks.{self.hook_point_layer}.hook_mlp_out" # change hookpoint name here
 
+        self.num_patch = int(math.sqrt(self.context_size - 1))
+
         # Autofill cached_activations_path unless the user overrode it
         if self.cached_activations_path is None:
             self.cached_activations_path = f"activations/{self.dataset_path.replace('/', '_')}/{self.model_name.replace('/', '_')}/{self.hook_point}"
@@ -80,13 +85,12 @@ class RunnerConfig(ABC):
 
 @dataclass
 class EvalConfig(ABC):
-    evaluation_functions: List
-    log_frequency: Optional[int]
+    evaluation_functions: List[Evaluation]
+    eval_frequency: Optional[int]
     batch_size: int
     max_evaluation_images: int
     samples_per_bin: int  # Number of features to sample per pre-specified interval
     max_images_per_feature: int  # Number of max images to collect per feature
-    patch_size: str
 
 
 @dataclass
@@ -95,15 +99,14 @@ class TrainingEvalConfig(EvalConfig):
     compute and time costly as they get run every step.
     """
 
-    evaluation_functions: List = field(
+    evaluation_functions: List[Evaluation] = field(
         default_factory=lambda: []
     )
-    log_frequency: Optional[int] = None
+    eval_frequency: Optional[int] = 2500
     batch_size: int = 28
     max_evaluation_images: int = 100
     samples_per_bin: int = 10
     max_images_per_feature: int = 20
-    patch_size: str = 32
 
 
 @dataclass
@@ -113,15 +116,17 @@ class PostTrainingEvalConfig(EvalConfig):
     SAE.
     """
 
-    evaluation_functions: Dict = field(
-        default_factory=lambda: ["plot_log_frequencies",]
+    evaluation_functions: List[Evaluation] = field(
+        default_factory=lambda: [
+            Evaluation.FEATURE_BASIS_EVAL,
+            # Evaluation.NEURON_BASIS_EVAL,
+        ]
     )
-    log_frequency: Optional[int] = None
+    eval_frequency: Optional[int] = 1
     batch_size: int = 28
     max_evaluation_images: int = 100
     samples_per_bin: int = 10
     max_images_per_feature: int = 20
-    patch_size: str = 32
 
 
 @dataclass

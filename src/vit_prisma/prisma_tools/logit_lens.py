@@ -13,8 +13,8 @@ import torch
 from collections import defaultdict
 from typing import Union, Optional, Dict, List, Tuple
 
-from vit_prisma.utils.data_utils.imagenet_dict import IMAGENET_DICT
-from vit_prisma.utils.data_utils.imagenet_utils import imagenet_index_from_word
+from vit_prisma.utils.data_utils.imagenet.imagenet_dict import IMAGENET_DICT
+from vit_prisma.utils.data_utils.imagenet.imagenet_utils import imagenet_index_from_word
 
 
 def get_patch_logit_directions(cache, all_answers: torch.Tensor, incl_mid: bool = False, return_labels: bool = True) -> tuple:

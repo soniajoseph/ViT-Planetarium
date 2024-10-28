@@ -710,6 +710,7 @@ def download_pretrained_from_hf(
         revision=None,
         cache_dir: Union[str, None] = None,
 ):
+    print("model_id download_pretrained_from_hf:", model_id)
     has_hf_hub(True)
     cached_file = hf_hub_download(model_id, filename, revision=revision, cache_dir=cache_dir)
     return cached_file

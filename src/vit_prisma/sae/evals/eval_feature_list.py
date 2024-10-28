@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import os
-from vit_prisma.sae.evals import highest_activating_tokens, get_heatmap, image_patch_heatmap, setup_environment, load_model, load_dataset, EvalConfig
+from vit_prisma.sae.evals.evals import highest_activating_tokens, get_heatmap, image_patch_heatmap, setup_environment, load_model, load_dataset, EvalConfig
 from vit_prisma.dataloaders.imagenet_dataset import get_imagenet_index_to_name
 
 from vit_prisma.sae.sae import SparseAutoencoder

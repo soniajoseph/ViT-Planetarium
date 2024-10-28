@@ -6,15 +6,22 @@ from datasets import load_dataset
 from torch.utils.data import DataLoader
 from vit_prisma.models.base_vit import HookedViT
 
-import numpy as np 
+import numpy as np
+
 
 def collate_fn(data):
     imgs = [d[0] for d in data]
     return torch.stack(imgs, dim=0)
 
+
+
+
+
 def collate_fn_eval(data):
     imgs = [d[0] for d in data]
     return torch.stack(imgs, dim=0), torch.tensor([d[1] for d in data])
+
+
 
 class VisionActivationsStore:
     """
@@ -28,15 +35,30 @@ class VisionActivationsStore:
         model: HookedViT,
         dataset,
         create_dataloader: bool = True,
-        eval_dataset = None,
+        eval_dataset=None,
         num_workers=0,
     ):
         self.cfg = cfg
         self.model = model
         self.model.to(cfg.device)
         self.dataset = dataset
-        self.image_dataloader = torch.utils.data.DataLoader(self.dataset, shuffle=True, num_workers=num_workers, batch_size=self.cfg.store_batch_size, collate_fn=collate_fn, drop_last=True)
-        self.image_dataloader_eval = torch.utils.data.DataLoader(eval_dataset, shuffle=True, num_workers=num_workers, batch_size=self.cfg.store_batch_size, collate_fn=collate_fn_eval, drop_last=True)
+
+        self.image_dataloader = torch.utils.data.DataLoader(
+            self.dataset,
+            shuffle=True,
+            num_workers=num_workers,
+            batch_size=self.cfg.store_batch_size,
+            collate_fn=collate_fn,
+            drop_last=True,
+        )
+        self.image_dataloader_eval = torch.utils.data.DataLoader(
+            eval_dataset,
+            shuffle=True,
+            num_workers=num_workers,
+            batch_size=self.cfg.store_batch_size,
+            collate_fn=collate_fn_eval,
+            drop_last=True,
+        )
 
         self.image_dataloader_iter = self.get_batch_tokens_internal()
         self.image_dataloader_eval_iter = self.get_val_batch_tokens_internal()
@@ -73,16 +95,16 @@ class VisionActivationsStore:
         """
         Streams a batch of tokens from a dataset.
         """
-        #TODO could keep diff image sizes..
+        # TODO could keep diff image sizes..
 
-        #TODO multi worker here 
+        # TODO multi worker here
         device = self.cfg.device
         # fetch a batch of images... (shouldn't this be it's own dataloader...)
 
         while True:
             for data in self.image_dataloader:
                 data.requires_grad_(False)
-                yield data.to(device) # 5
+                yield data.to(device)  # 5
 
     def get_batch_tokens(self):
         return next(self.image_dataloader_iter)
@@ -92,23 +114,45 @@ class VisionActivationsStore:
         """
         Streams a batch of tokens from a dataset.
         """
-        #TODO could keep diff image sizes..
+        # TODO could keep diff image sizes..
 
-        #TODO multi worker here 
+        # TODO multi worker here
         device = self.cfg.device
         # fetch a batch of images... (shouldn't this be it's own dataloader...)
+        # agreed, what the hell is going on here
         while True:
-            for image_data, labels  in self.image_dataloader_eval:
+            for image_data, labels in self.image_dataloader_eval:
                 image_data.requires_grad_(False)
                 labels.requires_grad_(False)
                 yield image_data.to(device), labels.to(device)
-    
+
     def get_val_batch_tokens(self):
         return next(self.image_dataloader_eval_iter)
 
+
+    # for live eval
+    # this gets the same batch (first) from the eval dataloader each time
+    def get_val_activations_one_batch(self):
+        num_layers = (
+            len(self.cfg.hook_point_layer)
+            if isinstance(self.cfg.hook_point_layer, list)
+            else 1
+        )  # Number of hook points or layers
+        for image_data, labels in self.image_dataloader_eval:
+            image_data.requires_grad_(False)
+            labels.requires_grad_(False)
+            break
+        # return tuple of (tokens, labels)
+        return self.get_activations(image_data.to(self.cfg.device)), labels
+
+
     def get_activations(self, batch_tokens: torch.Tensor, get_loss: bool = False):
         """
-        Returns activations of shape (batches, context, num_layers, d_in)
+        Returns activations with shape determined by config:
+        - If cls_token and head_index: (batch, 1, num_layers, head_dim)
+        - If cls_token only: (batch, 1, num_layers, d_model)
+        - If head_index only: (batch, seq_len, num_layers, head_dim)
+        - If neither: (batch, seq_len, num_layers, d_model)
         """
         layers = (
             self.cfg.hook_point_layer
@@ -118,30 +162,25 @@ class VisionActivationsStore:
         act_names = [self.cfg.hook_point.format(layer=layer) for layer in layers]
         hook_point_max_layer = max(layers)
 
-        if self.cfg.hook_point_head_index is not None:
-            layerwise_activations = self.model.run_with_cache(
-                batch_tokens,
-                names_filter=act_names,
-                stop_at_layer=hook_point_max_layer + 1,
-            )[1]
-            activations_list = [
-                layerwise_activations[act_name][:, :, self.cfg.hook_point_head_index]
-                for act_name in act_names
-            ]
-        else:
-            layerwise_activations = self.model.run_with_cache( ####
-                batch_tokens,
-                names_filter=act_names,
-                stop_at_layer=hook_point_max_layer + 1,
-            )[1]
-            activations_list = [
-                layerwise_activations[act_name] for act_name in act_names
-            ]
+        layerwise_activations = self.model.run_with_cache(
+            batch_tokens,
+            names_filter=act_names,
+            stop_at_layer=hook_point_max_layer + 1,
+        )[1]
 
-        # Stack along a new dimension to keep separate layers distinct
-        stacked_activations = torch.stack(activations_list, dim=2)
+        activations_list = []
+        for act_name in act_names:
+            acts = layerwise_activations[act_name]
+            if self.cfg.hook_point_head_index is not None:
+                # If we're selecting specific head, do this first
+                acts = acts[:, :, self.cfg.hook_point_head_index]
+            if self.cfg.cls_token_only:
+                # Then select CLS token if needed
+                acts = acts[:, 0:1]
+            activations_list.append(acts)
 
-        return stacked_activations
+        return torch.stack(activations_list, dim=2)
+
 
     def get_buffer(self, n_batches_in_buffer: int):
         context_size = self.cfg.context_size
@@ -154,7 +193,7 @@ class VisionActivationsStore:
             else 1
         )  # Number of hook points or layers
 
-        #TODO does this still work (see above)
+        # TODO does this still work (see above)
         if self.cfg.use_cached_activations:
             # Load the activations from disk
             buffer_size = total_size * context_size
@@ -217,11 +256,14 @@ class VisionActivationsStore:
         )
 
         for refill_batch_idx_start in refill_iterator:
-            refill_batch_tokens = self.get_batch_tokens() ######
+            refill_batch_tokens = self.get_batch_tokens()  ######
             refill_activations = self.get_activations(refill_batch_tokens)
+            
+            if self.cfg.use_patches_only:
+                refill_activations = refill_activations[:, 1:, :, :]
 
             new_buffer[
-                refill_batch_idx_start : refill_batch_idx_start + batch_size, ...
+              refill_batch_idx_start : refill_batch_idx_start + batch_size, ...
             ] = refill_activations
 
             # pbar.update(1)
@@ -230,7 +272,7 @@ class VisionActivationsStore:
         new_buffer = new_buffer[torch.randperm(new_buffer.shape[0])]
 
         return new_buffer
-    
+
     def get_data_loader(
         self,
     ) -> Iterator[Any]:
@@ -246,12 +288,14 @@ class VisionActivationsStore:
 
         # 1. # create new buffer by mixing stored and new buffer
         mixing_buffer = torch.cat(
-            [self.get_buffer(self.cfg.n_batches_in_buffer // 2), self.storage_buffer], ####
+            [
+                self.get_buffer(self.cfg.n_batches_in_buffer // 2),
+                self.storage_buffer,
+            ],  ####
             dim=0,
         )
 
         mixing_buffer = mixing_buffer[torch.randperm(mixing_buffer.shape[0])]
-
         # 2.  put 50 % in storage
         self.storage_buffer = mixing_buffer[: mixing_buffer.shape[0] // 2]
 
@@ -266,7 +310,7 @@ class VisionActivationsStore:
         )
 
         return dataloader
-    
+
     def next_batch(self):
         """
         Get the next batch from the current DataLoader.

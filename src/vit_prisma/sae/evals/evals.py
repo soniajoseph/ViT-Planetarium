@@ -235,6 +235,30 @@ def average_l0_test(cfg, val_dataloader, sparse_autoencoder, model, evaluation_m
 
     print(f"Saved average l0 figure to {save_path}") if cfg.verbose else None
 
+
+# due to loading issues with laion/CLIP-ViT-B-32-DataComp.XL-s13B-b90k
+def get_text_embeddings_openclip(vanilla_model, processor, tokenizer, original_text, batch_size=32):
+    # Split the text into batches
+    text_batches = [original_text[i:i+batch_size] for i in range(0, len(original_text), batch_size)]
+
+    all_embeddings = []
+
+    for batch in text_batches:
+        inputs = tokenizer(batch)
+        # inputs = {k: v.to(cfg.device) for k, v in inputs.items()}
+        with torch.no_grad():
+            text_embeddings = vanilla_model.encode_text(inputs)
+
+        text_embeddings = text_embeddings / text_embeddings.norm(dim=-1, keepdim=True)
+        all_embeddings.append(text_embeddings)
+
+    # Concatenate all batches
+    final_embeddings = torch.cat(all_embeddings, dim=0)
+
+    return final_embeddings
+
+
+# this needs to be redone to not assume huggingface
 def get_text_embeddings(model_name, original_text, batch_size=32):
     from transformers import CLIPProcessor, CLIPModel
     vanilla_model = CLIPModel.from_pretrained(model_name)
@@ -260,13 +284,13 @@ def get_text_embeddings(model_name, original_text, batch_size=32):
 
     return final_embeddings
 
+
 @torch.no_grad()
-def get_recons_loss(
+def get_substitution_loss(
     sparse_autoencoder: SparseAutoencoder,
     model: HookedViT,
     batch_tokens: torch.Tensor,
     gt_labels: torch.Tensor,
-    all_labels: List[str],
     text_embeddings: torch.Tensor,
     device: torch.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 ):
@@ -282,11 +306,24 @@ def get_recons_loss(
     image_embeddings, _ = model.run_with_cache(batch_tokens)
 
     # Calculate similarity scores
-    softmax_values, top_k_indices = get_similarity(image_embeddings, text_embeddings, device=device)
+    # print(f"image_embeddings.shape: {image_embeddings.shape}")
+    # print(f"text_embeddings.shape: {text_embeddings.shape}")
 
+    softmax_values, top_k_indices = get_similarity(image_embeddings, text_embeddings, device=device)
+    class_logits = get_logits(image_embeddings, text_embeddings, device=device)
+    # print(f"softmax_values: {softmax_values}")
+    # print(f"softmax_values.shape: {softmax_values.shape}")
+    # print(f"gt_labels.shape: {gt_labels.shape}")
+    # print(f"gt_labels: {gt_labels}")
+    # print(f"top_k_indices: {top_k_indices}")
+    # print(f"class_logits: {class_logits}")
     # Calculate cross-entropy loss
-    loss = F.cross_entropy(softmax_values, gt_labels)
+    # cross entropy should take logits, not softmax
+    loss_softmax = F.cross_entropy(softmax_values, gt_labels)
+    loss = F.cross_entropy(class_logits, gt_labels)
     # Safely extract the loss value
+    # print(f"model loss: {loss}")
+    # print(f"model loss_logit: {loss_softmax}")
     loss_value = loss.item() if torch.isfinite(loss).all() else float('nan')
 
     head_index = sparse_autoencoder.cfg.hook_point_head_index
@@ -307,18 +344,24 @@ def get_recons_loss(
         batch_tokens,
         fwd_hooks=[(hook_point, partial(replacement_hook))],
     )
-    recons_softmax_values, _ = get_similarity(recons_image_embeddings, text_embeddings, device=device)
+    # recons_softmax_values, _ = get_similarity(recons_image_embeddings, text_embeddings, device=device)
+    recons_softmax_values = get_logits(recons_image_embeddings, text_embeddings, device=device)
     recons_loss = F.cross_entropy(recons_softmax_values, gt_labels)
 
     zero_abl_image_embeddings = model.run_with_hooks(
         batch_tokens, fwd_hooks=[(hook_point, zero_ablate_hook)]
     )
-    zero_abl_softmax_values, _ = get_similarity(zero_abl_image_embeddings, text_embeddings, device=device)
+    zero_abl_softmax_values = get_logits(zero_abl_image_embeddings, text_embeddings, device=device)
     zero_abl_loss = F.cross_entropy(zero_abl_softmax_values, gt_labels)
 
     score = (zero_abl_loss - recons_loss) / (zero_abl_loss - loss)
 
     return score, loss, recons_loss, zero_abl_loss
+
+
+def get_logits(image_features, text_features, device='cuda'):
+    return (image_features.to(device) @ text_features.to(device).T)
+
 
 def get_similarity(image_features, text_features, k=5, device='cuda'):
   image_features = image_features.to(device)
@@ -326,6 +369,7 @@ def get_similarity(image_features, text_features, k=5, device='cuda'):
 
   softmax_values = (image_features @ text_features.T).softmax(dim=-1)
   top_k_values, top_k_indices = torch.topk(softmax_values, k, dim=-1)
+  print(f"top_k_values: {top_k_values}")
   return softmax_values, top_k_indices
 
 def get_text_labels(name='wordbank'):
@@ -439,7 +483,7 @@ def process_dataset(model, sparse_autoencoder, dataloader, cfg):
             all_cosine_similarity.append(cos_sim)
 
             # Calculate substitution loss
-            score, loss, recons_loss, zero_abl_loss = get_recons_loss(sparse_autoencoder, model, batch_tokens, gt_labels, all_labels, 
+            score, loss, recons_loss, zero_abl_loss = get_substitution_loss(sparse_autoencoder, model, batch_tokens, gt_labels, 
                                                                       text_embeddings, device=cfg.device)
 
             total_loss += loss.item()

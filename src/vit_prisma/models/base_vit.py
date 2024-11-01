@@ -9,44 +9,32 @@ For more information on TransformerLens, visit: https://github.com/neelnanda-io/
 """
 
 import logging
-
-import torch
-import torch.nn as nn
-
-from transformers import ViTForImageClassification
-
-from vit_prisma.models.layers.patch_embedding import PatchEmbedding, TubeletEmbedding
-from vit_prisma.models.layers.position_embedding import PosEmbedding
-from vit_prisma.models.layers.layer_norm import LayerNorm, LayerNormPre
-from vit_prisma.models.layers.mlp import MLP
-from vit_prisma.models.layers.attention import Attention
-from vit_prisma.models.layers.transformer_block import TransformerBlock, BertBlock
-from vit_prisma.models.layers.head import Head
-
-from vit_prisma.training.training_dictionary import activation_dict, initialization_dict
-# from vit_prisma.models.prisma_net import PrismaNet
-from vit_prisma.prisma_tools.hook_point import HookPoint
-from vit_prisma.prisma_tools.hooked_root_module import HookedRootModule
-
-from vit_prisma.configs import HookedViTConfig
-
-from vit_prisma.prisma_tools.activation_cache import ActivationCache
-
-from vit_prisma.prisma_tools.loading_from_pretrained import convert_pretrained_model_config, get_pretrained_state_dict, fill_missing_keys
-from vit_prisma.utils.prisma_utils import transpose
-
-from vit_prisma.utils import devices
-from vit_prisma.prisma_tools import FactoredMatrix
-
-from typing import Union, Dict, List, Tuple, Optional, Literal
-
-from jaxtyping import Float, Int
+from typing import Union, Dict, Tuple, Optional, Literal
 
 import einops
-from fancy_einsum import einsum
-
+import torch
+import torch.nn as nn
 import torch.nn.functional as F
- 
+from fancy_einsum import einsum
+from jaxtyping import Float
+from transformers import ViTForImageClassification
+
+from vit_prisma.configs import HookedViTConfig
+from vit_prisma.models.layers.attention import Attention
+from vit_prisma.models.layers.head import Head
+from vit_prisma.models.layers.layer_norm import LayerNorm, LayerNormPre
+from vit_prisma.models.layers.mlp import MLP
+from vit_prisma.models.layers.patch_embedding import PatchEmbedding, TubeletEmbedding
+from vit_prisma.models.layers.position_embedding import PosEmbedding
+from vit_prisma.models.layers.transformer_block import TransformerBlock, BertBlock
+from vit_prisma.prisma_tools import FactoredMatrix
+from vit_prisma.prisma_tools.activation_cache import ActivationCache
+from vit_prisma.prisma_tools.hook_point import HookPoint
+from vit_prisma.prisma_tools.hooked_root_module import HookedRootModule
+from vit_prisma.prisma_tools.loading_from_pretrained import convert_pretrained_model_config, get_pretrained_state_dict, \
+    fill_missing_keys
+from vit_prisma.utils import devices
+from vit_prisma.utils.prisma_utils import transpose
 
 DTYPE_FROM_STRING = {
     "float32": torch.float32,
@@ -177,7 +165,7 @@ class HookedViT(HookedRootModule):
             embed = torch.cat((cls_tokens, embed), dim=1) # Add to embedding
                     
         pos_embed = self.hook_pos_embed(self.pos_embed(input))
-        
+
         residual = embed + pos_embed
 
         self.hook_full_embed(residual)
@@ -741,7 +729,7 @@ class HookedViT(HookedRootModule):
         use_attn_result: Optional[bool] = False,
         **from_pretrained_kwargs,
     ) -> "HookedViT":
-        
+
         assert not (
             from_pretrained_kwargs.get("load_in_8bit", False)
             or from_pretrained_kwargs.get("load_in_4bit", False)
@@ -750,6 +738,7 @@ class HookedViT(HookedRootModule):
         if isinstance(dtype, str):
             # Convert from string to a torch dtype
             dtype = DTYPE_FROM_STRING[dtype]
+
         if "torch_dtype" in from_pretrained_kwargs:
             # For backwards compatibility with the previous way to do low precision loading
             # This should maybe check the user did not explicitly set dtype *and* torch_dtype
@@ -774,8 +763,6 @@ class HookedViT(HookedRootModule):
         state_dict = get_pretrained_state_dict(
             model_name, is_timm, is_clip, cfg, hf_model, dtype=dtype, return_old_state_dict=True, **from_pretrained_kwargs
         )
-
-
 
         model = cls(cfg, move_to_device=False)
 

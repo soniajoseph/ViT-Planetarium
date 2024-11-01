@@ -160,6 +160,7 @@ class VisionSAETrainer:
                 imagenet_paths["val_labels"],
                 data_transforms,
             )
+
             print(f"Train data length: {len(train_data)}") if self.cfg.verbose else None
             (
                 print(f"Validation data length: {len(val_data)}")

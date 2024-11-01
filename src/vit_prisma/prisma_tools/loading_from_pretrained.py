@@ -7,24 +7,19 @@ Copyright (c) Sonia Joseph. All rights reserved.
 Inspired by TransformerLens. Some functions have been adapted from the TransformerLens project.
 For more information on TransformerLens, visit: https://github.com/neelnanda-io/TransformerLens
 """
-
+from open_clip import get_model_config
+import open_clip
 import logging
-
-from transformers import AutoConfig, ViTForImageClassification, VivitForVideoClassification, CLIPModel, ViTModel
-
-import timm
-from vit_prisma.configs.HookedViTConfig import HookedViTConfig
-
-import torch
-
+from functools import partial
 from typing import Dict
-
-import einops
-
 from typing import Union
 
-# import partial
-from functools import partial
+import einops
+import timm
+import torch
+from transformers import AutoConfig, ViTForImageClassification, VivitForVideoClassification, CLIPModel, ViTModel
+
+from vit_prisma.configs.HookedViTConfig import HookedViTConfig
 
 try:
     from huggingface_hub import hf_hub_download
@@ -37,9 +32,9 @@ except ImportError:
 import json
 
 def convert_open_clip_weights(
-        old_state_dict,
-        cfg: HookedViTConfig,
-        device = 'cuda',
+    old_state_dict,
+    cfg: HookedViTConfig,
+    device = 'cuda',
 ):
     new_vision_model_state_dict = {}
 
@@ -129,6 +124,7 @@ def convert_open_clip_weights(
     # print(old_state_dict["visual.positional_embedding"].flatten()[8474])
 
     return new_vision_model_state_dict
+
 
 def convert_dino_weights(
         old_state_dict,
@@ -278,6 +274,7 @@ def convert_timm_weights(
         old_state_dict,
         cfg: HookedViTConfig,
 ):
+    print(f"Converting the weights of a timm model to a Prisma ViT")
 
     new_state_dict = {}
     new_state_dict["cls_token"] = old_state_dict["cls_token"]
@@ -460,16 +457,62 @@ def convert_hf_vit_for_image_classification_weights(   old_state_dict,
     return new_state_dict
 
 
-def convert_open_clip_config(model_cfg):
+def convert_open_clip_config(model_cfg, model_name):
+    """OpenCLIP models' config is stored in the open_clip_config.json file on Hugging
+    Face. Convert this to Prisma's `HookedViT` config.
+    """
+    print(f"Converting the weights of a open clip model to a Prisma ViT")
+
     cfg = HookedViTConfig()
-    cfg.d_model = model_cfg['vision_cfg']['width']
-    cfg.n_layers = model_cfg['vision_cfg']['layers']
-    cfg.patch_size = model_cfg['vision_cfg']['patch_size']
-    cfg.image_size = model_cfg['vision_cfg']['image_size']
-    cfg.d_mlp = cfg.d_model * 4
-    cfg.n_heads = 12
+
+    if "eva02_enormous" in model_name:  # TODO EdS:
+        cfg.d_model = 1792
+        cfg.n_layers = 40
+        cfg.patch_size = 14
+        cfg.image_size = 224
+        cfg.n_classes = 1000  # This is the projection dimensionality
+    elif "eva02_large" in model_name:
+        cfg.d_model = model_cfg['vision_cfg']['width']
+        cfg.n_layers = 40
+        cfg.patch_size = model_cfg['vision_cfg']['patch_size']
+        cfg.image_size = model_cfg['vision_cfg']['image_size']
+        cfg.n_classes = model_cfg['embed_dim']  # This is the projection dimensionality
+    elif "eva02_base" in model_name:
+        cfg.d_model = 768
+        cfg.n_layers = 12
+        cfg.patch_size = 16
+        cfg.image_size = model_cfg['vision_cfg']['image_size']
+        cfg.n_classes = model_cfg['embed_dim']
+    else:
+        cfg.d_model = model_cfg['vision_cfg']['width']
+        cfg.n_layers = model_cfg['vision_cfg']['layers']
+        cfg.patch_size = model_cfg['vision_cfg']['patch_size']
+        cfg.image_size = model_cfg['vision_cfg']['image_size']
+        cfg.n_classes = model_cfg['embed_dim'] # This is the projection dimensionality
+
+    if model_cfg['vision_cfg'].get("mlp_ratio"):
+        cfg.d_mlp = int(cfg.d_model * model_cfg['vision_cfg'].get("mlp_ratio"))
+    else:
+        cfg.d_mlp = cfg.d_model * 4
+    print(f"Set the cfg.d_mlp to {cfg.d_mlp}")
+
+    if "plus_clip" in model_name:
+        cfg.n_heads = 14
+    elif any(s in model_name for s in ["vit_xsmall", "tinyclip"]):
+        cfg.n_heads = 8
+    elif any(s in model_name for s in ["ViT-B", "vit-base"]):
+        cfg.n_heads = 12
+    elif any(s in model_name for s in ["ViT-L", "vit_large", "vit_medium", "bigG"]):
+        cfg.n_heads = 16
+    elif any(s in model_name for s in ["huge_", "ViT-H"]):
+        cfg.n_heads = 20
+    elif any(s in model_name for s in ["ViT-g", "giant_"]):
+        cfg.n_heads = 22
+    elif any(s in model_name for s in ["gigantic_"]):
+        cfg.n_heads = 26
+    else:
+        cfg.n_heads = 12
     cfg.d_head = cfg.d_model // cfg.n_heads
-    cfg.n_classes = model_cfg['embed_dim'] # This is the projection dimensionality
     cfg.return_type = None
     cfg.layer_norm_pre = True
     cfg.eps = 1e-5
@@ -516,7 +559,25 @@ def get_pretrained_state_dict(
         
     try:
         print("Official model name", official_model_name)
-        if is_timm:
+
+
+        eva02_models = [
+            "open-clip:timm/eva02_base_patch16_clip_224.merged2b_s8b_b131k",
+            "open-clip:timm/eva02_enormous_patch14_clip_224.laion2b_s4b_b115k",
+            "open-clip:timm/eva02_enormous_patch14_plus_clip_224.laion2b_s9b_b144",
+            "open-clip:timm/eva02_large_patch14_clip_224.merged2b_s4b_b131k",
+            "open-clip:timm/eva02_large_patch14_clip_336.merged2b_s6b_b61k",
+            "open-clip:timm/eva_giant_patch14_clip_224.laion400m_s11b_b41k",
+            "open-clip:timm/eva_giant_patch14_plus_clip_224.merged2b_s11b_b114k",
+        ]
+        if official_model_name in eva02_models:
+            model_name, model_weights = official_model_name.split(".")
+            model_name = model_name.split("/")[1]
+            hf_model = timm.create_model(model_name, pretrained=model_weights)
+            for param in hf_model.parameters():
+                param.requires_grad = False
+            state_dict = convert_timm_weights(hf_model.state_dict(), cfg)
+        elif is_timm:
             hf_model = hf_model if hf_model is not None else timm.create_model(official_model_name, pretrained=True)
             for param in hf_model.parameters():
                 param.requires_grad = False
@@ -561,10 +622,11 @@ def get_pretrained_state_dict(
 
         return state_dict
 
-    except:
+    except Exception as e:
         raise ValueError(
-            f"Loading weights from the architecture is not currently supported: {cfg.original_architecture}, generated from model name {cfg.model_name}. Feel free to open an issue on GitHub to request this feature."
-        )
+            f"Loading weights from the architecture is not currently supported: {cfg.original_architecture}, generated "
+            f"from model name {official_model_name}. Feel free to open an issue on GitHub to request this feature."
+        ) from e
 
 def fill_missing_keys(model, state_dict):
     """Takes in a state dict from a pretrained model, and fills in any missing keys with the default initialization.
@@ -601,11 +663,23 @@ def remove_open_clip_prefix(text, prefix="open-clip:"):
         return text[len(prefix):]
     return text 
 
+
 def convert_pretrained_model_config(model_name: str, is_timm: bool = True, is_clip: bool = False) -> HookedViTConfig:
-    
+
     if 'dino' in model_name:
         is_timm = False
-        
+
+    models_missing_config = {
+        "open-clip:laion/CLIP-ViT-B-32-xlm-roberta-base-laion5B-s13B-b90k": ("xlm-roberta-base-ViT-B-32", "laion5b_s13b_b90k"),
+        "open-clip:laion/CLIP-ViT-B-32-roberta-base-laion2B-s12B-b32k": ("roberta-ViT-B-32", "laion2b_s12b_b32k"),
+        "open-clip:laion/CLIP-ViT-H-14-frozen-xlm-roberta-large-laion5B-s13B-b90k": ("xlm-roberta-large-ViT-H-14", "frozen_laion5b_s13b_b90k"),
+        "open-clip:laion/CoCa-ViT-B-32-laion2B-s13B-b90k": ("coca_ViT-B-32", "laion2b_s13b_b90k"),
+        "open-clip:laion/CoCa-ViT-L-14-laion2B-s13B-b90k": ("coca_ViT-L-14", "laion2b_s13b_b90k"),
+    }
+    if model_name in list(models_missing_config.keys()):
+        hf_config = get_model_config(models_missing_config[model_name][0])
+        hf_config = convert_open_clip_config(hf_config, model_name)
+        return hf_config
     if is_timm:
         model = timm.create_model(model_name)
         hf_config = AutoConfig.from_pretrained(model.default_cfg['hf_hub_id'])
@@ -613,9 +687,13 @@ def convert_pretrained_model_config(model_name: str, is_timm: bool = True, is_cl
         config_path = download_pretrained_from_hf(remove_open_clip_prefix(model_name), filename='open_clip_config.json')
         with open(config_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
-            pretrained_cfg = config['preprocess_cfg']
-            hf_config = config['model_cfg']
-        hf_config = convert_open_clip_config(hf_config)
+            if config.get('model_cfg'):
+                hf_config = config['model_cfg']
+            elif config.get('vision_cfg'):
+                hf_config = config
+            else:
+                raise ValueError(f"TODO EdS:")
+        hf_config = convert_open_clip_config(hf_config, model_name)
         return hf_config
     elif is_clip: # Extract vision encoder from dual-encoder CLIP model. HF models
         hf_config = AutoConfig.from_pretrained(model_name).vision_config

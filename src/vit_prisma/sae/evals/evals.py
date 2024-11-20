@@ -356,7 +356,9 @@ def get_substitution_loss(
 
     score = (zero_abl_loss - recons_loss) / (zero_abl_loss - loss)
 
-    return score, loss, recons_loss, zero_abl_loss
+    substituted_cosine_sim = F.cosine_similarity(image_embeddings, recons_image_embeddings).cpu()
+
+    return score, loss, recons_loss, zero_abl_loss, substituted_cosine_sim
 
 
 def get_logits(image_features, text_features, device='cuda'):

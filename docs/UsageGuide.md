@@ -120,4 +120,20 @@ The trainer has support for callbacks, that allows you to pass methods that can 
  trainer.train(model_function, config, train_dataset, callbacks=[DemoCallback()])
  ```
 
+## Git Hooks
 
+We have git hooks that run `ruff` (linter), `black` (code formatter), and `isort` (standardising imports), to improve maintainability of the code base.
+
+To set these up all you need to do is run:
+
+```
+pre-commit install 
+```
+
+Now every time you try to make a commit, the hooks will run automatically on your staged files.
+
+Further instructions:
+
+* To manually run the hooks on all files: `pre-commit run --all-files`
+* To manually run on staged files only: `pre-commit run`
+* To skip (not recommended) for a commit: `git commit -m "your message" --no-verify`

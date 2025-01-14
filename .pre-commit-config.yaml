@@ -1,0 +1,25 @@
+repos:
+-   repo: https://github.com/psf/black
+    rev: 24.10.0
+    hooks:
+    -   id: black
+        language_version: python3
+
+-   repo: https://github.com/pycqa/isort
+    rev: 5.13.2
+    hooks:
+    -   id: isort
+        args: ["--profile", "black", "--filter-files"]
+
+-   repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.2.1  # Replace with latest version
+    hooks:
+    -   id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+    -   id: ruff-format
+
+-   repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+    -   id: check-yaml
+    -   id: check-case-conflict

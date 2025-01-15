@@ -716,17 +716,20 @@ class VisionSAETrainer:
                 result[field.name] = value
         return result
 
+    def initalize_wandb(self):
+        config_dict = self.dataclass_to_dict(self.cfg)
+        run_name = self.cfg.run_name.replace(":", "_")
+        wandb_project = self.cfg.wandb_project.replace(":", "_")
+        wandb.init(
+            project=wandb_project,
+            config=config_dict,
+            entity=self.cfg.wandb_entity,
+            name=run_name,
+        )
+
     def run(self):
         if self.cfg.log_to_wandb:
-            config_dict = self.dataclass_to_dict(self.cfg)
-            run_name = self.cfg.run_name.replace(":", "_")
-            wandb_project = self.cfg.wandb_project.replace(":", "_")
-            wandb.init(
-                project=wandb_project,
-                config=config_dict,
-                entity=self.cfg.wandb_entity,
-                name=run_name,
-            )
+            self.initalize_wandb()
 
         (
             act_freq_scores,
